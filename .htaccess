@@ -1,0 +1,6 @@
+# Prevent direct access to files - must use view_file.php
+<FilesMatch "\.(jpg|jpeg|png|gif|pdf|doc|docx)$">
+    Order Deny,Allow
+    Deny from all
+</FilesMatch>
+

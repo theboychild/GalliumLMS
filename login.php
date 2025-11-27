@@ -1,23 +1,9 @@
 <?php
 session_start();
-require_once '../config.php';
-require_once '../functions.php';
+require_once 'config.php'; // Ensure this file sets up $pdo correctly
 
-// If already logged in as officer, redirect to dashboard
-if (isset($_SESSION['user_type']) && $_SESSION['user_type'] === 'officer') {
-    header("Location: dashboard.php");
-    exit();
-}
-
-// If logged in as different user type, show error and logout
-if (isset($_SESSION['user_type']) && $_SESSION['user_type'] !== 'officer') {
-    session_destroy();
-    $errors[] = "Unauthorized access. Officer login only.";
-}
-
-// Check for error parameter
-if (isset($_GET['error']) && $_GET['error'] === 'unauthorized') {
-    $errors[] = "Unauthorized access. You must be a loan officer to access this area.";
+function sanitize($data) {
+    return htmlspecialchars(strip_tags(trim($data)));
 }
 
 $errors = [];
@@ -37,8 +23,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (empty($errors)) {
         try {
-            // Check users table - ONLY officer users
-            $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND user_type = 'officer'");
+            // Check users table
+            $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ?");
             $stmt->execute([$email]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -47,23 +33,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (isset($user['is_active']) && $user['is_active'] == 0) {
                     $errors[] = "Your account has been deactivated. Please contact administrator.";
                 } else {
-                    // Verify user is actually officer (double check)
-                    if ($user['user_type'] !== 'officer') {
-                        $errors[] = "Unauthorized access. This login is for loan officers only.";
+                    // Redirect admin and officer to their specific login pages
+                    if ($user['user_type'] === 'admin') {
+                        $errors[] = "Administrators must use the admin login page. <a href='admin/login.php'>Click here to login as admin</a>";
+                    } elseif ($user['user_type'] === 'officer') {
+                        $errors[] = "Officers must use the officer login page. <a href='officer/login.php'>Click here to login as officer</a>";
                     } else {
-                        // Set session variables
+                        // Only customers can login here
                         $_SESSION['user_id'] = $user['user_id'];
                         $_SESSION['username'] = $user['username'];
                         $_SESSION['email'] = $user['email'];
-                        $_SESSION['user_type'] = 'officer';
-
-                        // Redirect to officer dashboard
+                        $_SESSION['user_type'] = 'customer';
                         header("Location: dashboard.php");
                         exit();
                     }
                 }
             } else {
-                $errors[] = "Invalid email or password. Officer access only.";
+                $errors[] = "Invalid email or password";
             }
         } catch (PDOException $e) {
             $errors[] = "Database error: " . $e->getMessage();
@@ -77,245 +63,178 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Officer Login - <?php echo APP_NAME; ?></title>
+    <title>Login - <?php echo APP_NAME; ?></title>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
-    <link rel="stylesheet" href="../assets/css/style.css?v=<?php echo time(); ?>">
+    <link rel="stylesheet" href="assets/css/style.css?v=<?php echo time(); ?>">
     <style>
         body {
             font-family: 'Poppins', sans-serif;
-            background: linear-gradient(135deg, #059669 0%, #10b981 50%, #34d399 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            background-color: #f5f5f5;
             color: #333;
-            margin: 0;
-            padding: 20px;
         }
 
-        .login-container {
-            max-width: 450px;
-            width: 100%;
+        .container {
+            max-width: 500px;
+            margin: 50px auto;
+            padding: 40px;
             background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            overflow: hidden;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
         }
 
-        .login-header {
-            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
-            color: white;
-            padding: 40px 30px;
+        h1 {
             text-align: center;
-        }
-
-        .login-header h1 {
-            margin: 0 0 10px 0;
-            font-size: 28px;
-            font-weight: 600;
-        }
-
-        .login-header p {
-            margin: 0;
-            opacity: 0.9;
-            font-size: 14px;
-        }
-
-        .login-header .officer-badge {
-            display: inline-block;
-            background: rgba(255, 255, 255, 0.2);
-            padding: 6px 16px;
-            border-radius: 20px;
-            margin-top: 15px;
-            font-size: 12px;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        .login-body {
-            padding: 40px 30px;
+            color: #1e3a8a;
+            margin-bottom: 20px;
         }
 
         .form-group {
-            margin-bottom: 24px;
+            margin-bottom: 20px;
         }
 
         label {
             display: block;
-            margin-bottom: 8px;
+            margin-bottom: 5px;
             font-weight: 500;
-            color: #059669;
-            font-size: 14px;
         }
 
         .form-control {
             width: 100%;
-            padding: 14px 16px;
-            border: 2px solid #e5e7eb;
-            border-radius: 8px;
-            font-size: 15px;
-            transition: all 0.3s;
-            box-sizing: border-box;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
         }
 
-        .form-control:focus {
-            outline: none;
-            border-color: #059669;
-            box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
-        }
-
-        .input-icon {
-            position: relative;
-        }
-
-        .input-icon i {
-            position: absolute;
-            left: 16px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: #6b7280;
-        }
-
-        .input-icon .form-control {
-            padding-left: 45px;
-        }
-
-        .btn-login {
-            width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+        .btn {
+            display: inline-block;
+            padding: 12px 20px;
+            background: #1e3a8a;
             color: white;
             border: none;
             border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
             cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+            font-weight: 500;
             transition: all 0.3s;
-            margin-top: 10px;
         }
 
-        .btn-login:hover {
+        .btn:hover {
+            background: #1e40af;
             transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(5, 150, 105, 0.3);
-        }
-
-        .btn-login:active {
-            transform: translateY(0);
+            box-shadow: 0 4px 12px rgba(30, 58, 138, 0.3);
         }
 
         .alert {
-            padding: 14px 16px;
-            margin-bottom: 24px;
-            border-radius: 8px;
-            font-size: 14px;
+            padding: 10px;
+            margin-bottom: 20px;
+            border-radius: 5px;
         }
 
         .alert-danger {
-            background: #fee2e2;
-            color: #991b1b;
-            border: 1px solid #fecaca;
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
         }
 
-        .login-footer {
+        .forgot-password {
+            text-align: right;
+            margin-top: -15px;
+            margin-bottom: 15px;
+        }
+
+        .register-link, .back-to-home {
             text-align: center;
-            padding: 20px 30px;
-            background: #f9fafb;
-            border-top: 1px solid #e5e7eb;
+            margin-top: 20px;
         }
-
-        .login-footer a {
-            color: #059669;
+        
+        .btn-register-link {
+            color: #1e3a8a;
             text-decoration: none;
-            font-weight: 500;
-            font-size: 14px;
-            transition: color 0.3s;
+            font-weight: 600;
+            padding: 8px 16px;
+            border: 2px solid #1e3a8a;
+            border-radius: 5px;
+            display: inline-block;
+            transition: all 0.3s;
         }
-
-        .login-footer a:hover {
-            color: #10b981;
+        
+        .btn-register-link:hover {
+            background: #1e3a8a;
+            color: white;
         }
-
-        .back-to-home {
-            margin-top: 15px;
-        }
-
+        
         .back-to-home a {
-            color: #6b7280;
-            font-size: 13px;
+            color: #666;
+            text-decoration: none;
+            font-size: 0.9rem;
         }
-
-        .security-note {
-            background: #d1fae5;
-            border-left: 4px solid #059669;
-            padding: 12px 16px;
-            margin-bottom: 24px;
-            border-radius: 4px;
-            font-size: 13px;
-            color: #065f46;
-        }
-
-        .security-note i {
-            margin-right: 8px;
+        
+        .back-to-home a:hover {
+            color: #1e3a8a;
         }
     </style>
 </head>
 <body>
-    <div class="login-container">
-        <div class="login-header">
-            <h1><i class="fas fa-user-tie"></i> Loan Officer Login</h1>
-            <p>Gallium Solutions Limited</p>
-            <div class="officer-badge">
-                <i class="fas fa-briefcase"></i> Officer Access Only
+    <div class="container">
+        <h1><i class="fas fa-university"></i> Customer Login</h1>
+        <p style="text-align: center; color: #666; margin-top: 10px; margin-bottom: 20px;">
+            <strong>Note:</strong> Administrators and Officers have separate login pages
+        </p>
+
+        <?php if (!empty($errors)): ?>
+            <div class="alert alert-danger">
+                <?php foreach ($errors as $error): ?>
+                    <p><?php echo $error; ?></p>
+                <?php endforeach; ?>
             </div>
-        </div>
+        <?php endif; ?>
 
-        <div class="login-body">
-            <div class="security-note">
-                <i class="fas fa-info-circle"></i>
-                <strong>Officer Portal:</strong> This login is for loan officers only. Use your assigned credentials to access the system.
+        <form action="login.php" method="POST">
+            <div class="form-group">
+                <label for="email">Email Address</label>
+                <input type="email" name="email" id="email" class="form-control" required>
             </div>
 
-            <?php if (!empty($errors)): ?>
-                <div class="alert alert-danger">
-                    <?php foreach ($errors as $error): ?>
-                        <p style="margin: 0;"><i class="fas fa-exclamation-circle"></i> <?php echo htmlspecialchars($error); ?></p>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-
-            <form action="login.php" method="POST">
-                <div class="form-group">
-                    <label for="email"><i class="fas fa-envelope"></i> Email Address</label>
-                    <div class="input-icon">
-                        <i class="fas fa-envelope"></i>
-                        <input type="email" name="email" id="email" class="form-control" required autocomplete="email" placeholder="officer@example.com">
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label for="password"><i class="fas fa-lock"></i> Password</label>
-                    <div class="input-icon">
-                        <i class="fas fa-lock"></i>
-                        <input type="password" name="password" id="password" class="form-control" required autocomplete="current-password" placeholder="Enter your password">
-                    </div>
-                </div>
-
-                <button type="submit" class="btn-login">
-                    <i class="fas fa-sign-in-alt"></i> Login as Officer
-                </button>
-            </form>
-        </div>
-
-        <div class="login-footer">
-            <a href="../index.php"><i class="fas fa-home"></i> Back to Home</a>
-            <div class="back-to-home">
-                <a href="../admin/login.php">Admin Login</a> | 
-                <a href="../login.php">Customer Login</a>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" name="password" id="password" class="form-control" required>
             </div>
+
+            <div class="forgot-password">
+                <a href="forgot_password.php">Forgot Password?</a>
+            </div>
+
+            <button type="submit" class="btn">Login</button>
+        </form>
+
+        <div class="register-link">
+            <p>Don't have an account? <a href="register.php" class="btn-register-link"><i class="fas fa-user-plus"></i> Sign Up</a></p>
         </div>
+        
+        <div style="text-align: center; margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            <p style="margin: 10px 0; color: #666; font-size: 14px;">
+                <strong>Staff Login:</strong><br>
+                <a href="admin/login.php" style="color: #1e3a8a; text-decoration: none; margin: 0 10px;">
+                    <i class="fas fa-shield-alt"></i> Admin Login
+                </a> | 
+                <a href="officer/login.php" style="color: #059669; text-decoration: none; margin: 0 10px;">
+                    <i class="fas fa-user-tie"></i> Officer Login
+                </a>
+            </p>
+        </div>
+        
+        <div class="back-to-home">
+            <a href="index.php"><i class="fas fa-home"></i> Back to Home</a>
+        </div>
+        
+        <?php if (isset($_SESSION['reset_success'])): ?>
+            <div class="alert alert-success" style="margin-top: 1rem;">
+                <p><?php echo htmlspecialchars($_SESSION['reset_success']); unset($_SESSION['reset_success']); ?></p>
+            </div>
+        <?php endif; ?>
     </div>
 </body>
 </html>
-
