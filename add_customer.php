@@ -2,11 +2,10 @@
 session_start();
 require_once '../config.php';
 require_once '../functions.php';
-requireAdminOrOfficer();
+requireOfficer();
 
 $errors = [];
 $success = false;
-$is_admin = isAdmin();
 $user_id = $_SESSION['user_id'];
 $customer_added_name = '';
 $loan_added = false;
@@ -39,8 +38,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $loan_amount = !empty($_POST['loan_amount']) ? floatval($_POST['loan_amount']) : null;
     $interest_rate = !empty($_POST['interest_rate']) ? floatval($_POST['interest_rate']) : DEFAULT_INTEREST_RATE;
     $loan_term_months = !empty($_POST['loan_term_months']) ? intval($_POST['loan_term_months']) : null;
-    $loan_term_weeks = !empty($_POST['loan_term_weeks']) ? intval($_POST['loan_term_weeks']) : null;
-    $loan_term_type = !empty($_POST['loan_term_type']) ? sanitize($_POST['loan_term_type']) : 'months';
     $application_date = !empty($_POST['application_date']) ? $_POST['application_date'] : date('Y-m-d');
     $loan_purpose = sanitize($_POST['loan_purpose'] ?? '');
     
@@ -100,30 +97,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // Optionally create user account if email provided
         if (!empty($email)) {
-            try {
-                // Check if user with this email exists
-                $stmt = $pdo->prepare("SELECT user_id FROM users WHERE email = ?");
-                $stmt->execute([$email]);
-                $existing_user = $stmt->fetch(PDO::FETCH_ASSOC);
+            // Check if user with this email exists
+            $stmt = $pdo->prepare("SELECT user_id FROM users WHERE email = ?");
+            $stmt->execute([$email]);
+            $existing_user = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($existing_user) {
+                $user_id = $existing_user['user_id'];
+            } else {
+                // Create user account
+                $temp_password = bin2hex(random_bytes(8)); // Temporary password
+                $hashed_password = password_hash($temp_password, PASSWORD_BCRYPT);
                 
-                if ($existing_user) {
-                    $user_id = $existing_user['user_id'];
-                } else {
-                    // Create user account
-                    $temp_password = bin2hex(random_bytes(8)); // Temporary password
-                    $hashed_password = password_hash($temp_password, PASSWORD_BCRYPT);
-                    
-                    $stmt = $pdo->prepare("
-                        INSERT INTO users (username, email, phone, password, user_type)
-                        VALUES (?, ?, ?, ?, 'customer')
-                    ");
-                    $stmt->execute([$customer_name, $email, $phone, $hashed_password]);
-                    $user_id = $pdo->lastInsertId();
-                }
-            } catch (PDOException $e) {
-                // If user creation fails, continue without user_id (customer can still be created)
-                error_log("User account creation error: " . $e->getMessage());
-                $user_id = null;
+                $stmt = $pdo->prepare("
+                    INSERT INTO users (username, email, phone, password, user_type)
+                    VALUES (?, ?, ?, ?, 'customer')
+                ");
+                $stmt->execute([$customer_name, $email, $phone, $hashed_password]);
+                $user_id = $pdo->lastInsertId();
             }
         }
         
@@ -134,7 +125,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $customer_id = $result['customer_id'];
             
             // Create loan application if loan details provided
-            if ($loan_amount && (($loan_term_type === 'months' && $loan_term_months) || ($loan_term_type === 'weeks' && $loan_term_weeks))) {
+            if ($loan_amount && $loan_term_months) {
                 // Validate loan amount
                 $amount_validation = validateLoanAmount($loan_amount);
                 if (!$amount_validation['valid']) {
@@ -154,22 +145,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $date_validation = validateApplicationDate($application_date);
                         
                         if ($amount_validation['valid'] && $date_validation['valid']) {
-                            $officer_id = $is_admin ? null : $user_id; // Assign to officer if not admin
+                            $officer_id = $_SESSION['user_id']; // Assign to current officer
                             
                             $stmt = $pdo->prepare("
-                                INSERT INTO loans (customer_id, officer_id, loan_amount, interest_rate, loan_term_months, loan_term_weeks, loan_term_type, purpose, application_date, status)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                                INSERT INTO loans (customer_id, officer_id, loan_amount, interest_rate, loan_term_months, purpose, application_date, status)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
                             ");
-                            $stmt->execute([$customer_id, $officer_id, $amount_validation['amount'], $interest_rate, $loan_term_months, $loan_term_weeks, $loan_term_type, $loan_purpose, $application_date]);
+                            $stmt->execute([$customer_id, $officer_id, $amount_validation['amount'], $interest_rate, $loan_term_months, $loan_purpose, $application_date]);
                             $loan_id = $pdo->lastInsertId();
                             
                             // Generate loan schedule
                             if (function_exists('generateLoanSchedule')) {
-                                $term_value = $loan_term_type === 'weeks' ? $loan_term_weeks : $loan_term_months;
-                                generateLoanSchedule($loan_id, $amount_validation['amount'], $interest_rate, $term_value, $application_date, $loan_term_type);
+                                $loan_term_type = 'months'; // Default for old loans
+                                // Check if loan_term_type exists in the loan record
+                                $loan_check = $pdo->query("SHOW COLUMNS FROM loans LIKE 'loan_term_type'")->fetch();
+                                if ($loan_check) {
+                                    $loan_stmt = $pdo->prepare("SELECT loan_term_type, loan_term_weeks FROM loans WHERE loan_id = ?");
+                                    $loan_stmt->execute([$loan_id]);
+                                    $loan_data = $loan_stmt->fetch(PDO::FETCH_ASSOC);
+                                    if ($loan_data && $loan_data['loan_term_type'] === 'weeks') {
+                                        generateLoanSchedule($loan_id, $amount_validation['amount'], $interest_rate, $loan_data['loan_term_weeks'], $application_date, 'weeks');
+                                    } else {
+                                        generateLoanSchedule($loan_id, $amount_validation['amount'], $interest_rate, $loan_term_months, $application_date, 'months');
+                                    }
+                                } else {
+                                    generateLoanSchedule($loan_id, $amount_validation['amount'], $interest_rate, $loan_term_months, $application_date, 'months');
+                                }
                             }
                             
                             $loan_result = ['success' => true, 'loan_id' => $loan_id];
+                            
+                            // Notify admin about new pending loan
+                            try {
+                                $admin_users = $pdo->query("SELECT user_id FROM users WHERE user_type = 'admin' AND is_active = 1")->fetchAll(PDO::FETCH_COLUMN);
+                                foreach ($admin_users as $admin_id) {
+                                    sendNotification(
+                                        $admin_id,
+                                        'New Loan Application Pending Approval',
+                                        "Officer " . htmlspecialchars($_SESSION['username'] ?? 'Unknown') . " has added a new customer '" . htmlspecialchars($customer_name) . "' with a pending loan application of UGX " . number_format(round($loan_amount), 0) . ". Please review and approve.",
+                                        'system',
+                                        $_SESSION['user_id']
+                                    );
+                                }
+                            } catch (PDOException $e) {
+                                error_log("Failed to send notification: " . $e->getMessage());
+                            }
                         } else {
                             $loan_result = ['success' => false, 'message' => 'Loan validation failed'];
                         }
@@ -209,14 +229,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             
                             if (!$upload_result['success']) {
                                 $warnings[] = "File '{$file['name']}' upload failed: " . $upload_result['message'];
-                                error_log("File upload failed for customer $customer_id: " . $upload_result['message']);
-                            } else {
-                                error_log("File uploaded successfully: " . $file['name'] . " for customer $customer_id");
                             }
                         } elseif ($file_error !== UPLOAD_ERR_NO_FILE) {
                             $file_name = $is_array ? ($uploaded_files['name'][$i] ?? 'Unknown') : ($uploaded_files['name'] ?? 'Unknown');
                             $warnings[] = "File '{$file_name}' upload error code: {$file_error}";
-                            error_log("File upload error for customer $customer_id: File '$file_name', Error code: $file_error");
                         }
                     }
                 }
@@ -230,7 +246,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 
                 // Redirect to prevent duplicate submissions
-                $redirect_url = $is_admin ? 'customers.php' : '../officer/customers.php';
                 $_SESSION['customer_added'] = true;
                 $_SESSION['customer_added_name'] = $customer_name;
                 if (isset($loan_result) && $loan_result['success']) {
@@ -240,18 +255,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!empty($warnings)) {
                     $_SESSION['customer_warning'] = implode('; ', $warnings);
                 }
-                header("Location: $redirect_url");
+                header("Location: customers.php");
                 exit();
             } else {
-                // Customer created but loan failed - still show success but with warning
+                // Customer created but loan failed - still redirect with warning
                 $warnings = $errors;
                 $errors = [];
-                // Redirect anyway since customer was created
-                $redirect_url = $is_admin ? 'customers.php' : '../officer/customers.php';
                 $_SESSION['customer_added'] = true;
                 $_SESSION['customer_added_name'] = $customer_name;
                 $_SESSION['customer_warning'] = implode(', ', $warnings);
-                header("Location: $redirect_url");
+                header("Location: customers.php");
                 exit();
             }
         } else {
@@ -276,24 +289,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <?php include '../includes/theme_support.php'; ?>
 </head>
 <body class="theme-<?php echo $current_theme; ?>">
-    <div class="admin-container">
+    <div class="officer-container">
         <?php 
-        $user_type = $is_admin ? 'admin' : 'officer';
+        $user_type = 'officer';
         $app_name = APP_NAME;
         $app_version = APP_VERSION;
         $base_path = '../';
+        $unread_count = $unread_count ?? 0;
         include '../includes/sidebar_template.php'; 
         ?>
         
-        <div class="admin-main">
-            
+        <div class="officer-main">
             <div class="page-header">
                 <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                     <div>
                         <h1><i class="fas fa-user-plus"></i> Add New Customer</h1>
                         <p>Register a new customer for loan applications</p>
                     </div>
-                    <a href="<?php echo $is_admin ? 'customers.php' : '../officer/customers.php'; ?>" class="btn btn-outline">
+                    <a href="customers.php" class="btn btn-outline">
                         <i class="fas fa-arrow-left"></i> Back to Customers
                     </a>
                 </div>
@@ -382,23 +395,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <legend class="form-section-title">
                             <i class="fas fa-briefcase"></i> Employment Information
                         </legend>
-                            
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label for="occupation">Occupation</label>
-                                    <input type="text" name="occupation" id="occupation" class="form-control">
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label for="employer">Employer</label>
-                                    <input type="text" name="employer" id="employer" class="form-control">
-                                </div>
+                        
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="occupation">Occupation</label>
+                                <input type="text" name="occupation" id="occupation" class="form-control">
                             </div>
                             
                             <div class="form-group">
-                                <label for="monthly_income">Monthly Income (UGX)</label>
-                                <input type="number" name="monthly_income" id="monthly_income" class="form-control" min="0" step="0.01" placeholder="Enter monthly income (optional)">
+                                <label for="employer">Employer</label>
+                                <input type="text" name="employer" id="employer" class="form-control">
                             </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="monthly_income">Monthly Income (UGX)</label>
+                            <input type="number" name="monthly_income" id="monthly_income" class="form-control" min="0" step="0.01" placeholder="Enter monthly income (optional)">
+                        </div>
                     </fieldset>
                     
                     <fieldset class="form-section">
@@ -450,21 +463,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             
                             <div class="form-row">
                                 <div class="form-group">
-                                    <label for="loan_term_type">Loan Term Type <span class="required-indicator">*</span></label>
-                                    <select name="loan_term_type" id="loan_term_type" class="form-control" required onchange="toggleTermInput()">
-                                        <option value="months">Months</option>
-                                        <option value="weeks">Weeks</option>
-                                    </select>
-                                </div>
-                                
-                                <div class="form-group" id="term_months_group">
-                                    <label for="loan_term_months" id="term_months_label">Loan Term <span class="required-indicator">*</span></label>
-                                    <input type="number" name="loan_term_months" id="loan_term_months" class="form-control" min="1" max="60" placeholder="Enter loan term (1-60)">
-                                </div>
-                                
-                                <div class="form-group" id="term_weeks_group" style="display: none;">
-                                    <label for="loan_term_weeks" id="term_weeks_label">Loan Term <span class="required-indicator">*</span></label>
-                                    <input type="number" name="loan_term_weeks" id="loan_term_weeks" class="form-control" min="1" max="260" placeholder="Enter loan term (1-260)">
+                                    <label for="loan_term_months">Loan Term (Months) <span class="required-indicator">*</span></label>
+                                    <input type="number" name="loan_term_months" id="loan_term_months" class="form-control" min="1" max="60" required placeholder="Enter loan term (1-60 months)">
                                 </div>
                                 
                                 <div class="form-group">
@@ -521,13 +521,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </div>
                     </fieldset>
                     
-                    <div style="display: flex; gap: var(--spacing-md); justify-content: flex-end; margin-top: var(--spacing-xl);">
-                        <a href="<?php echo $is_admin ? 'customers.php' : '../officer/customers.php'; ?>" class="btn btn-outline">
-                            <i class="fas fa-times"></i> Cancel
+                    <div style="display: flex; gap: var(--spacing-md); justify-content: space-between; margin-top: var(--spacing-xl);">
+                        <a href="customers.php" class="btn btn-outline">
+                            <i class="fas fa-arrow-left"></i> Back to Customers
                         </a>
-                        <button type="submit" class="btn btn-primary">
-                            <i class="fas fa-save"></i> Add Customer & Create Loan
-                        </button>
+                        <div style="display: flex; gap: var(--spacing-md);">
+                            <a href="customers.php" class="btn btn-outline">
+                                <i class="fas fa-times"></i> Cancel
+                            </a>
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-save"></i> Add Customer & Create Loan
+                            </button>
+                        </div>
                     </div>
                 </form>
             <?php endif; ?>
@@ -569,7 +574,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             const loanTermMonths = parseInt(document.getElementById('loan_term_months').value) || 0;
             const loanTermWeeks = parseInt(document.getElementById('loan_term_weeks').value) || 0;
             const loanTerm = termType === 'weeks' ? loanTermWeeks : loanTermMonths;
-            const termInMonths = termType === 'weeks' ? loanTermWeeks / 4.33 : loanTermMonths;
             
             if (loanAmount > 0 && loanTerm > 0) {
                 // Calculate total interest: Interest = (rate/100) * principal * loan_term
@@ -594,48 +598,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         
-        // Toggle between months and weeks input
-        function toggleTermInput() {
-            const termType = document.getElementById('loan_term_type').value;
-            const monthsGroup = document.getElementById('term_months_group');
-            const weeksGroup = document.getElementById('term_weeks_group');
-            const monthsInput = document.getElementById('loan_term_months');
-            const weeksInput = document.getElementById('loan_term_weeks');
-            const monthsLabel = document.getElementById('term_months_label');
-            const weeksLabel = document.getElementById('term_weeks_label');
-            
-            if (termType === 'weeks') {
-                monthsGroup.style.display = 'none';
-                weeksGroup.style.display = 'block';
-                monthsInput.removeAttribute('required');
-                weeksInput.setAttribute('required', 'required');
-                weeksLabel.innerHTML = 'Loan Term (Weeks) <span class="required-indicator">*</span>';
-            } else {
-                monthsGroup.style.display = 'block';
-                weeksGroup.style.display = 'none';
-                weeksInput.removeAttribute('required');
-                monthsInput.setAttribute('required', 'required');
-                monthsLabel.innerHTML = 'Loan Term (Months) <span class="required-indicator">*</span>';
-            }
-            
-            // Clear the hidden input and recalculate
-            if (termType === 'weeks') {
-                monthsInput.value = '';
-            } else {
-                weeksInput.value = '';
-            }
-            calculateLoan();
-        }
-        
         // Add event listeners for loan calculation
         document.getElementById('loan_amount').addEventListener('input', calculateLoan);
         document.getElementById('interest_rate').addEventListener('input', calculateLoan);
         document.getElementById('loan_term_months').addEventListener('input', calculateLoan);
-        document.getElementById('loan_term_weeks').addEventListener('input', calculateLoan);
-        document.getElementById('loan_term_type').addEventListener('change', function() {
-            toggleTermInput();
+        
+        // Validate application date (no backdating)
+        document.getElementById('application_date').addEventListener('change', function(e) {
+            const selectedDate = new Date(e.target.value);
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            selectedDate.setHours(0, 0, 0, 0);
+            
+            if (selectedDate < today) {
+                alert('Application date cannot be in the past. Please select today or a future date.');
+                e.target.value = '<?php echo date('Y-m-d'); ?>';
+            }
         });
         
+        // Initial calculation
+        calculateLoan();
+        
+        // National ID validation
         document.getElementById('national_id').addEventListener('blur', function(e) {
             const nationalId = e.target.value.toUpperCase().trim();
             if (nationalId.length > 0) {
@@ -696,60 +680,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         });
         
-        // Validate application date (no backdating)
-        document.getElementById('application_date').addEventListener('change', function(e) {
-            const selectedDate = new Date(e.target.value);
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            selectedDate.setHours(0, 0, 0, 0);
-            
-            if (selectedDate < today) {
-                alert('Application date cannot be in the past. Please select today or a future date.');
-                e.target.value = '<?php echo date('Y-m-d'); ?>';
-            }
-        });
-        
-        // Initial calculation
-        calculateLoan();
-        
         // File upload handling
-        document.getElementById('customer_documents').addEventListener('change', function(e) {
-            const files = e.target.files;
-            const fileList = document.getElementById('file-list');
-            const descriptionsDiv = document.getElementById('document-descriptions');
-            
-            fileList.innerHTML = '';
-            descriptionsDiv.innerHTML = '';
-            
-            if (files.length > 0) {
-                descriptionsDiv.style.display = 'block';
+        const fileInput = document.getElementById('customer_documents');
+        if (fileInput) {
+            fileInput.addEventListener('change', function(e) {
+                const files = e.target.files;
+                const fileList = document.getElementById('file-list');
+                const descriptionsDiv = document.getElementById('document-descriptions');
                 
-                Array.from(files).forEach((file, index) => {
-                    const fileItem = document.createElement('div');
-                    fileItem.style.cssText = 'padding: 0.5rem; background: #f3f4f6; border-radius: 4px; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center;';
-                    fileItem.innerHTML = `<span><i class="fas fa-file"></i> ${file.name} (${(file.size / 1024).toFixed(2)} KB)</span>`;
-                    fileList.appendChild(fileItem);
+                if (fileList && descriptionsDiv) {
+                    fileList.innerHTML = '';
+                    descriptionsDiv.innerHTML = '';
                     
-                    const descInput = document.createElement('input');
-                    descInput.type = 'text';
-                    descInput.name = 'document_descriptions[]';
-                    descInput.className = 'form-control';
-                    descInput.style.cssText = 'margin-bottom: 0.5rem;';
-                    descInput.placeholder = `Description for ${file.name} (optional)`;
-                    descriptionsDiv.appendChild(descInput);
-                });
-            } else {
-                descriptionsDiv.style.display = 'none';
-            }
-        });
+                    if (files.length > 0) {
+                        descriptionsDiv.style.display = 'block';
+                        
+                        Array.from(files).forEach((file, index) => {
+                            const fileItem = document.createElement('div');
+                            fileItem.style.cssText = 'padding: 0.5rem; background: #f3f4f6; border-radius: 4px; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center;';
+                            fileItem.innerHTML = `<span><i class="fas fa-file"></i> ${file.name} (${(file.size / 1024).toFixed(2)} KB)</span>`;
+                            fileList.appendChild(fileItem);
+                            
+                            const descInput = document.createElement('input');
+                            descInput.type = 'text';
+                            descInput.name = 'document_descriptions[]';
+                            descInput.className = 'form-control';
+                            descInput.style.cssText = 'margin-bottom: 0.5rem;';
+                            descInput.placeholder = `Description for ${file.name} (optional)`;
+                            descriptionsDiv.appendChild(descInput);
+                        });
+                    } else {
+                        descriptionsDiv.style.display = 'none';
+                    }
+                }
+            });
+        }
         
-        // Sidebar toggle functionality
+        // Sidebar toggle is handled by sidebar_template.php
+        // No need for duplicate function
         
-        // Restore sidebar state on page load
+        // Ensure toggle functions are available
         document.addEventListener('DOMContentLoaded', function() {
-            const isCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
-            if (isCollapsed) {
-                document.querySelector('.admin-container').classList.add('sidebar-collapsed');
+            // Verify sidebar toggle is available
+            if (typeof toggleSidebar === 'undefined') {
+                console.error('toggleSidebar function not found');
+            }
+            
+            // Verify theme toggle is available
+            if (typeof toggleTheme === 'undefined') {
+                console.error('toggleTheme function not found');
+            }
+            
+            // Force re-initialization if needed
+            const container = document.querySelector('.officer-container');
+            if (container) {
+                const isCollapsed = localStorage.getItem('officerSidebarCollapsed') === 'true';
+                if (isCollapsed) {
+                    container.classList.add('sidebar-collapsed');
+                }
             }
         });
     </script>

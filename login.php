@@ -3,21 +3,21 @@ session_start();
 require_once '../config.php';
 require_once '../functions.php';
 
-// If already logged in as admin, redirect to dashboard
-if (isset($_SESSION['user_type']) && $_SESSION['user_type'] === 'admin') {
+// If already logged in as officer, redirect to dashboard
+if (isset($_SESSION['user_type']) && $_SESSION['user_type'] === 'officer') {
     header("Location: dashboard.php");
     exit();
 }
 
 // If logged in as different user type, show error and logout
-if (isset($_SESSION['user_type']) && $_SESSION['user_type'] !== 'admin') {
+if (isset($_SESSION['user_type']) && $_SESSION['user_type'] !== 'officer') {
     session_destroy();
-    $errors[] = "Unauthorized access. Admin login only.";
+    $errors[] = "Unauthorized access. Officer login only.";
 }
 
 // Check for error parameter
 if (isset($_GET['error']) && $_GET['error'] === 'unauthorized') {
-    $errors[] = "Unauthorized access. You must be an administrator to access this area.";
+    $errors[] = "Unauthorized access. You must be a loan officer to access this area.";
 }
 
 $errors = [];
@@ -33,45 +33,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (empty($password)) {
         $errors[] = "Password is required";
-    } elseif (strlen($password) < 10) {
-        $errors[] = "Admin password must be at least 10 characters long";
-    } elseif (!preg_match('/^A/i', $password)) {
-        $errors[] = "Admin password must begin with the letter 'A'";
     }
 
     if (empty($errors)) {
         try {
-            // Check users table - ONLY admin users
-            $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND user_type = 'admin'");
+            // Check users table - ONLY officer users
+            $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND user_type = 'officer'");
             $stmt->execute([$email]);
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($user && password_verify($password, $user['password'])) {
-                // Additional validation: Check if password meets admin requirements
-                if (strlen($password) < 10) {
-                    $errors[] = "Admin password must be at least 10 characters long";
-                } elseif (!preg_match('/^A/i', $password)) {
-                    $errors[] = "Admin password must begin with the letter 'A'";
-                } elseif (isset($user['is_active']) && $user['is_active'] == 0) {
+                // Check if user is active
+                if (isset($user['is_active']) && $user['is_active'] == 0) {
                     $errors[] = "Your account has been deactivated. Please contact administrator.";
                 } else {
-                    // Verify user is actually admin (double check)
-                    if ($user['user_type'] !== 'admin') {
-                        $errors[] = "Unauthorized access. This login is for administrators only.";
+                    // Verify user is actually officer (double check)
+                    if ($user['user_type'] !== 'officer') {
+                        $errors[] = "Unauthorized access. This login is for loan officers only.";
                     } else {
                         // Set session variables
                         $_SESSION['user_id'] = $user['user_id'];
                         $_SESSION['username'] = $user['username'];
                         $_SESSION['email'] = $user['email'];
-                        $_SESSION['user_type'] = 'admin';
+                        $_SESSION['user_type'] = 'officer';
 
-                        // Redirect to admin dashboard
+                        // Redirect to officer dashboard
                         header("Location: dashboard.php");
                         exit();
                     }
                 }
             } else {
-                $errors[] = "Invalid email or password. Admin access only.";
+                $errors[] = "Invalid email or password. Officer access only.";
             }
         } catch (PDOException $e) {
             $errors[] = "Database error: " . $e->getMessage();
@@ -85,14 +77,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Login - <?php echo APP_NAME; ?></title>
+    <title>Officer Login - <?php echo APP_NAME; ?></title>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <link rel="stylesheet" href="../assets/css/style.css?v=<?php echo time(); ?>">
     <style>
         body {
             font-family: 'Poppins', sans-serif;
-            background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 50%, #3b82f6 100%);
+            background: linear-gradient(135deg, #059669 0%, #10b981 50%, #34d399 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -112,7 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .login-header {
-            background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
             color: white;
             padding: 40px 30px;
             text-align: center;
@@ -130,7 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-size: 14px;
         }
 
-        .login-header .admin-badge {
+        .login-header .officer-badge {
             display: inline-block;
             background: rgba(255, 255, 255, 0.2);
             padding: 6px 16px;
@@ -154,7 +146,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             display: block;
             margin-bottom: 8px;
             font-weight: 500;
-            color: #1e3a8a;
+            color: #059669;
             font-size: 14px;
         }
 
@@ -170,8 +162,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         .form-control:focus {
             outline: none;
-            border-color: #1e3a8a;
-            box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.1);
+            border-color: #059669;
+            box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
         }
 
         .input-icon {
@@ -193,7 +185,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .btn-login {
             width: 100%;
             padding: 14px;
-            background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
             color: white;
             border: none;
             border-radius: 8px;
@@ -206,7 +198,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         .btn-login:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(30, 58, 138, 0.3);
+            box-shadow: 0 8px 20px rgba(5, 150, 105, 0.3);
         }
 
         .btn-login:active {
@@ -234,7 +226,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .login-footer a {
-            color: #1e3a8a;
+            color: #059669;
             text-decoration: none;
             font-weight: 500;
             font-size: 14px;
@@ -242,7 +234,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .login-footer a:hover {
-            color: #1e40af;
+            color: #10b981;
         }
 
         .back-to-home {
@@ -255,13 +247,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .security-note {
-            background: #fef3c7;
-            border-left: 4px solid #f59e0b;
+            background: #d1fae5;
+            border-left: 4px solid #059669;
             padding: 12px 16px;
             margin-bottom: 24px;
             border-radius: 4px;
             font-size: 13px;
-            color: #92400e;
+            color: #065f46;
         }
 
         .security-note i {
@@ -272,17 +264,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
     <div class="login-container">
         <div class="login-header">
-            <h1><i class="fas fa-shield-alt"></i> Administrator Login</h1>
+            <h1><i class="fas fa-user-tie"></i> Loan Officer Login</h1>
             <p>Gallium Solutions Limited</p>
-            <div class="admin-badge">
-                <i class="fas fa-user-shield"></i> Admin Access Only
+            <div class="officer-badge">
+                <i class="fas fa-briefcase"></i> Officer Access Only
             </div>
         </div>
 
         <div class="login-body">
             <div class="security-note">
-                <i class="fas fa-lock"></i>
-                <strong>Secure Access:</strong> This login is restricted to administrators only. Unauthorized access attempts are logged.
+                <i class="fas fa-info-circle"></i>
+                <strong>Officer Portal:</strong> This login is for loan officers only. Use your assigned credentials to access the system.
             </div>
 
             <?php if (!empty($errors)): ?>
@@ -298,7 +290,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <label for="email"><i class="fas fa-envelope"></i> Email Address</label>
                     <div class="input-icon">
                         <i class="fas fa-envelope"></i>
-                        <input type="email" name="email" id="email" class="form-control" required autocomplete="email" placeholder="admin@example.com">
+                        <input type="email" name="email" id="email" class="form-control" required autocomplete="email" placeholder="officer@example.com">
                     </div>
                 </div>
 
@@ -311,7 +303,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
 
                 <button type="submit" class="btn-login">
-                    <i class="fas fa-sign-in-alt"></i> Login as Administrator
+                    <i class="fas fa-sign-in-alt"></i> Login as Officer
                 </button>
             </form>
         </div>
@@ -319,7 +311,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="login-footer">
             <a href="../index.php"><i class="fas fa-home"></i> Back to Home</a>
             <div class="back-to-home">
-                <a href="../officer/login.php">Officer Login</a> | 
+                <a href="../admin/login.php">Admin Login</a> | 
                 <a href="../login.php">Customer Login</a>
             </div>
         </div>

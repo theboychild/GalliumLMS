@@ -2,16 +2,18 @@
 session_start();
 require_once '../config.php';
 require_once '../functions.php';
-requireAdmin();
+requireOfficer();
 
 $user_id = $_SESSION['user_id'];
 $errors = [];
+$success = false;
 
 if (isset($_GET['mark_read']) && isset($_GET['id'])) {
     $notification_id = (int)$_GET['id'];
     try {
         $stmt = $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE notification_id = ? AND user_id = ?");
         $stmt->execute([$notification_id, $user_id]);
+        $success = true;
         header("Location: notifications.php?marked=1");
         exit();
     } catch (PDOException $e) {
@@ -23,6 +25,7 @@ if (isset($_GET['mark_all_read'])) {
     try {
         $stmt = $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0");
         $stmt->execute([$user_id]);
+        $success = true;
         header("Location: notifications.php?marked_all=1");
         exit();
     } catch (PDOException $e) {
@@ -43,8 +46,12 @@ try {
     $unread_stmt->execute([$user_id]);
     $unread_count = $unread_stmt->fetchColumn() ?: 0;
     
-    // Use direct query
-    if ($col_check) {
+    // Check if sender_id column exists
+    $sender_col_check = $pdo->query("SHOW COLUMNS FROM notifications LIKE 'sender_id'")->fetch();
+    
+    // Use direct query that works regardless of column existence
+    if ($sender_col_check) {
+        // sender_id exists, use query with join
         $sql = "SELECT n.*, 
                 sender.username as sender_username
                 FROM notifications n
@@ -53,10 +60,10 @@ try {
                 ORDER BY n.created_at DESC
                 LIMIT 100";
     } else {
+        // sender_id doesn't exist, use simple query
         $sql = "SELECT n.*, 
-                sender.username as sender_username
+                NULL as sender_username
                 FROM notifications n
-                LEFT JOIN users sender ON n.sender_id = sender.user_id
                 WHERE n.user_id = ?
                 ORDER BY n.created_at DESC
                 LIMIT 100";
@@ -69,6 +76,28 @@ try {
 } catch (PDOException $e) {
     error_log("Notification retrieval error: " . $e->getMessage());
     $errors[] = "Error loading notifications: " . $e->getMessage();
+    
+    // Last resort: try simplest possible query
+    try {
+        $simple_sql = "SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 100";
+        $stmt = $pdo->prepare($simple_sql);
+        $stmt->execute([$user_id]);
+        $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Add sender_username manually
+        foreach ($notifications as &$notif) {
+            if (!empty($notif['sender_id'])) {
+                $sender_stmt = $pdo->prepare("SELECT username FROM users WHERE user_id = ?");
+                $sender_stmt->execute([$notif['sender_id']]);
+                $sender = $sender_stmt->fetch(PDO::FETCH_ASSOC);
+                $notif['sender_username'] = $sender['username'] ?? 'Admin';
+            } else {
+                $notif['sender_username'] = 'Admin';
+            }
+        }
+    } catch (PDOException $e2) {
+        error_log("Simple query also failed: " . $e2->getMessage());
+    }
 }
 ?>
 
@@ -84,9 +113,9 @@ try {
     <?php include '../includes/theme_support.php'; ?>
 </head>
 <body class="theme-<?php echo $current_theme; ?>">
-    <div class="admin-container">
+    <div class="officer-container">
         <?php 
-        $user_type = 'admin';
+        $user_type = 'officer';
         $app_name = APP_NAME;
         $app_version = APP_VERSION;
         $base_path = '../';
@@ -94,11 +123,11 @@ try {
         include '../includes/sidebar_template.php'; 
         ?>
         
-        <div class="admin-main">
+        <div class="officer-main">
             <div class="page-header">
                 <div>
                     <h1><i class="fas fa-bell"></i> Notifications</h1>
-                    <p>View your notifications</p>
+                    <p>View your notifications from the administrator</p>
                 </div>
                 <?php if ($unread_count > 0): ?>
                     <div>
@@ -183,5 +212,29 @@ try {
             <?php endif; ?>
         </div>
     </div>
+    
+    <script>
+        // Ensure toggle functions are available
+        document.addEventListener('DOMContentLoaded', function() {
+            // Verify sidebar toggle is available
+            if (typeof toggleSidebar === 'undefined') {
+                console.error('toggleSidebar function not found');
+            }
+            
+            // Verify theme toggle is available
+            if (typeof toggleTheme === 'undefined') {
+                console.error('toggleTheme function not found');
+            }
+            
+            // Force re-initialization if needed
+            const container = document.querySelector('.officer-container');
+            if (container) {
+                const isCollapsed = localStorage.getItem('officerSidebarCollapsed') === 'true';
+                if (isCollapsed) {
+                    container.classList.add('sidebar-collapsed');
+                }
+            }
+        });
+    </script>
 </body>
 </html>

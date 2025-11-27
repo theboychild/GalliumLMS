@@ -2,11 +2,10 @@
 session_start();
 require_once '../config.php';
 require_once '../functions.php';
-requireAdminOrOfficer();
+requireOfficer();
 
-$is_admin = isAdmin();
+$is_admin = false;
 $user_id = $_SESSION['user_id'];
-$base_path = $is_admin ? '' : '../';
 $errors = [];
 $success = false;
 $success_message = '';
@@ -36,13 +35,8 @@ $date_from = $_GET['date_from'] ?? date('Y-m-01');
 $date_to = $_GET['date_to'] ?? date('Y-m-t');
 
 // Build query
-$where = "lp.payment_date BETWEEN ? AND ?";
-$params = [$date_from, $date_to];
-
-if (!$is_admin) {
-    $where .= " AND lp.received_by = ?";
-    $params[] = $user_id;
-}
+$where = "lp.payment_date BETWEEN ? AND ? AND lp.received_by = ?";
+$params = [$date_from, $date_to, $user_id];
 
 if (!empty($loan_id_filter)) {
     $where .= " AND lp.loan_id = ?";
@@ -70,19 +64,12 @@ $active_loans_sql = "
     SELECT l.loan_id, l.loan_amount, c.customer_name
     FROM loans l
     LEFT JOIN customers c ON l.customer_id = c.customer_id
-    WHERE l.status = 'active'
+    WHERE l.status = 'active' AND l.officer_id = ?
+    ORDER BY l.loan_id DESC LIMIT 50
 ";
-if (!$is_admin) {
-    $active_loans_sql .= " AND l.officer_id = ?";
-}
-$active_loans_sql .= " ORDER BY l.loan_id DESC LIMIT 50";
 
 $stmt = $pdo->prepare($active_loans_sql);
-if ($is_admin) {
-    $stmt->execute();
-} else {
-    $stmt->execute([$user_id]);
-}
+$stmt->execute([$user_id]);
 $active_loans = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Calculate totals
@@ -103,17 +90,17 @@ $total_interest = !empty($payments) ? array_sum(array_column($payments, 'interes
     <?php include '../includes/theme_support.php'; ?>
 </head>
 <body class="theme-<?php echo $current_theme; ?>">
-    <div class="admin-container">
+    <div class="officer-container">
         <?php 
-        $user_type = $is_admin ? 'admin' : 'officer';
+        $user_type = 'officer';
         $app_name = APP_NAME;
         $app_version = APP_VERSION;
         $base_path = '../';
+        $unread_count = $unread_count ?? 0;
         include '../includes/sidebar_template.php'; 
         ?>
         
-        <div class="admin-main">
-            
+        <div class="officer-main">
             <div class="page-header">
                 <div>
                     <h1><i class="fas fa-money-bill-wave"></i> Payments Management</h1>
@@ -256,13 +243,12 @@ $total_interest = !empty($payments) ? array_sum(array_column($payments, 'interes
                             <th>Interest</th>
                             <th>Payment Date</th>
                             <th>Method</th>
-                            <th>Received By</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($payments)): ?>
                             <tr>
-                                <td colspan="9" style="text-align: center; padding: var(--spacing-2xl); color: var(--medium-gray);">
+                                <td colspan="8" style="text-align: center; padding: var(--spacing-2xl); color: var(--medium-gray);">
                                     <i class="fas fa-inbox" style="font-size: 3rem; margin-bottom: var(--spacing-md); opacity: 0.3;"></i>
                                     <p>No payments found</p>
                                 </td>
@@ -271,7 +257,7 @@ $total_interest = !empty($payments) ? array_sum(array_column($payments, 'interes
                             <?php foreach ($payments as $payment): ?>
                                 <tr>
                                     <td>#<?php echo $payment['payment_id']; ?></td>
-                                    <td><a href="<?php echo $base_path . ($is_admin ? 'customer_account.php' : 'officer/customer_account.php'); ?>?id=<?php echo $payment['loan_id']; ?>" style="color: var(--primary-blue);">#<?php echo $payment['loan_id']; ?></a></td>
+                                    <td><a href="../admin/customer_account.php?id=<?php echo $payment['loan_id']; ?>" style="color: var(--primary-blue);">#<?php echo $payment['loan_id']; ?></a></td>
                                     <td>
                                         <strong><?php echo htmlspecialchars($payment['customer_name']); ?></strong><br>
                                         <small style="color: var(--medium-gray);"><?php echo htmlspecialchars($payment['phone']); ?></small>
@@ -286,7 +272,6 @@ $total_interest = !empty($payments) ? array_sum(array_column($payments, 'interes
                                             <br><small style="color: var(--medium-gray);">Ref: <?php echo htmlspecialchars($payment['transaction_reference']); ?></small>
                                         <?php endif; ?>
                                     </td>
-                                    <td><?php echo $payment['received_by_name'] ? htmlspecialchars($payment['received_by_name']) : 'System'; ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         <?php endif; ?>
@@ -297,6 +282,30 @@ $total_interest = !empty($payments) ? array_sum(array_column($payments, 'interes
             </div>
         </div>
     </div>
+    
+    <script>
+        // Ensure toggle functions are available
+        document.addEventListener('DOMContentLoaded', function() {
+            // Verify sidebar toggle is available
+            if (typeof toggleSidebar === 'undefined') {
+                console.error('toggleSidebar function not found');
+            }
+            
+            // Verify theme toggle is available
+            if (typeof toggleTheme === 'undefined') {
+                console.error('toggleTheme function not found');
+            }
+            
+            // Force re-initialization if needed
+            const container = document.querySelector('.officer-container');
+            if (container) {
+                const isCollapsed = localStorage.getItem('officerSidebarCollapsed') === 'true';
+                if (isCollapsed) {
+                    container.classList.add('sidebar-collapsed');
+                }
+            }
+        });
+    </script>
 </body>
 </html>
 

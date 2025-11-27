@@ -2,9 +2,9 @@
 session_start();
 require_once '../config.php';
 require_once '../functions.php';
-requireAdminOrOfficer();
+requireOfficer();
 
-$is_admin = isAdmin();
+$is_admin = false;
 $user_id = $_SESSION['user_id'];
 $errors = [];
 $success = false;
@@ -208,7 +208,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </div>
                             
                             <div class="form-group" id="term_months_group">
-                                <label for="loan_term_months" id="term_months_label">Loan Term <span class="required-indicator">*</span></label>
+                                <label for="loan_term_months" id="term_months_label">Loan Term (Months) <span class="required-indicator">*</span></label>
                                 <input type="number" name="loan_term_months" id="loan_term_months" class="form-control" min="1" max="60" placeholder="Enter loan term (1-60)">
                             </div>
                             
@@ -260,6 +260,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 monthsInput.setAttribute('required', 'required');
             }
         }
+        
+        // Ensure toggle functions are available
+        document.addEventListener('DOMContentLoaded', function() {
+            // Verify sidebar toggle is available
+            if (typeof toggleSidebar === 'undefined') {
+                console.error('toggleSidebar function not found');
+            }
+            
+            // Verify theme toggle is available
+            if (typeof toggleTheme === 'undefined') {
+                console.error('toggleTheme function not found');
+            }
+            
+            // Force re-initialization if needed
+            const container = document.querySelector('.officer-container');
+            if (container) {
+                const isCollapsed = localStorage.getItem('officerSidebarCollapsed') === 'true';
+                if (isCollapsed) {
+                    container.classList.add('sidebar-collapsed');
+                }
+            }
+        });
     </script>
 </body>
 </html>

@@ -2,192 +2,76 @@
 session_start();
 require_once '../config.php';
 require_once '../functions.php';
-requireAdminOrOfficer();
+requireOfficer();
 
-$is_admin = isAdmin();
+$is_admin = false;
 $user_id = $_SESSION['user_id'];
-$base_path = $is_admin ? '' : '../';
 $errors = [];
 $success = false;
 $success_message = '';
 
-// Handle loan actions
-if (isset($_GET['approve'])) {
-    $loan_id = intval($_GET['approve']);
-    $result = approveLoan($loan_id, $user_id);
-    if ($result['success']) {
-        $success = true;
-        $success_message = "Loan #$loan_id approved successfully.";
-    } else {
-        $errors[] = $result['message'];
-    }
-}
-
-if (isset($_GET['disburse'])) {
-    $loan_id = intval($_GET['disburse']);
-    $result = disburseLoan($loan_id, $user_id);
-    if ($result['success']) {
-        $success = true;
-        $success_message = "Loan #$loan_id disbursed and activated successfully.";
-    } else {
-        $errors[] = $result['message'];
-    }
-}
-
-if (isset($_GET['reject'])) {
-    $loan_id = intval($_GET['reject']);
-    $rejection_reason = $_GET['reason'] ?? 'Not specified';
-    $result = rejectLoan($loan_id, $user_id, $rejection_reason);
-    if ($result['success']) {
-        $success = true;
-        $success_message = "Loan #$loan_id rejected.";
-    } else {
-        $errors[] = $result['message'];
-    }
-}
+// Officers cannot approve/reject/disburse loans - only admins can
+// Removed loan action handlers for officers
 
 // Get filter parameters
 $status_filter = $_GET['status'] ?? 'all';
 $search = $_GET['search'] ?? '';
 
 // Build query
-$where = "1=1";
-$params = [];
-
-if (!$is_admin) {
-    $where .= " AND l.officer_id = ?";
-    $params[] = $user_id;
-}
+$where = "l.officer_id = ?";
+$params = [$user_id];
 
 if ($status_filter !== 'all') {
-    if ($status_filter === 'active') {
-        // Active loans: status is 'active' AND not fully paid (not 'completed')
-        $where .= " AND l.status = 'active' AND l.status != 'completed'";
-    } else {
-        $where .= " AND l.status = ?";
-        $params[] = $status_filter;
-    }
+    $where .= " AND l.status = ?";
+    $params[] = $status_filter;
 }
 
 if (!empty($search)) {
+    $where .= " AND (c.customer_name LIKE ? OR l.loan_id = ?)";
     $search_param = "%$search%";
-    $search_conditions = [];
-    $search_params = [];
-    
-    // Search by customer name
-    $search_conditions[] = "c.customer_name LIKE ?";
-    $search_params[] = $search_param;
-    
-    // Search by loan ID if numeric
+    $params[] = $search_param;
     if (is_numeric($search)) {
-        $search_conditions[] = "l.loan_id = ?";
-        $search_params[] = intval($search);
-    }
-    
-    // Search by date (YYYY-MM-DD or DD/MM/YYYY)
-    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $search)) {
-        $search_conditions[] = "DATE(l.application_date) = ?";
-        $search_params[] = $search;
-    } elseif (preg_match('/^\d{2}\/\d{2}\/\d{4}$/', $search)) {
-        $date_parts = explode('/', $search);
-        $date_search = $date_parts[2] . '-' . $date_parts[0] . '-' . $date_parts[1];
-        $search_conditions[] = "DATE(l.application_date) = ?";
-        $search_params[] = $date_search;
-    }
-    
-    if (!empty($search_conditions)) {
-        $where .= " AND (" . implode(' OR ', $search_conditions) . ")";
-        $params = array_merge($params, $search_params);
+        $params[] = intval($search);
+    } else {
+        $params[] = 0;
     }
 }
 
-// Get loans with payment status - handle missing loan_term_type column
-try {
-    // Check if loan_term_type column exists
-    $col_check = $pdo->query("SHOW COLUMNS FROM loans LIKE 'loan_term_type'")->fetch();
-    
-    if ($col_check) {
-        // Column exists, use full query
-        $sql = "
-            SELECT l.*, c.customer_name, c.phone, c.email, u.username as officer_name,
-                   COALESCE(SUM(lp.payment_amount), 0) as total_paid,
-                   (l.loan_amount + (l.loan_amount * l.interest_rate / 100 * 
-                    CASE 
-                        WHEN l.loan_term_type = 'weeks' THEN COALESCE(l.loan_term_weeks, 0)
-                        ELSE COALESCE(l.loan_term_months, 0)
-                    END)) as total_due,
-                   CASE 
-                       WHEN l.loan_term_type = 'weeks' THEN CONCAT(l.loan_term_weeks, ' weeks')
-                       ELSE CONCAT(COALESCE(l.loan_term_months, 0), ' months')
-                   END as term_display,
-                   (SELECT MIN(ls.due_date) 
-                    FROM loan_schedule ls 
-                    WHERE ls.loan_id = l.loan_id 
-                    AND ls.status != 'paid' 
-                    AND ls.due_date < CURDATE()) as next_overdue_date
-            FROM loans l
-            LEFT JOIN customers c ON l.customer_id = c.customer_id
-            LEFT JOIN users u ON l.officer_id = u.user_id
-            LEFT JOIN loan_payments lp ON l.loan_id = lp.loan_id
-            WHERE $where
-            GROUP BY l.loan_id
-            ORDER BY l.created_at DESC
-            LIMIT 100
-        ";
-    } else {
-        // Column doesn't exist, use fallback query
-        $sql = "
-            SELECT l.*, c.customer_name, c.phone, c.email, u.username as officer_name,
-                   COALESCE(SUM(lp.payment_amount), 0) as total_paid,
-                   (l.loan_amount + (l.loan_amount * l.interest_rate / 100 * 
-                    CASE 
-                        WHEN l.loan_term_type = 'weeks' THEN COALESCE(l.loan_term_weeks, 0)
-                        ELSE COALESCE(l.loan_term_months, 0)
-                    END)) as total_due,
-                   CONCAT(COALESCE(l.loan_term_months, 0), ' months') as term_display,
-                   (SELECT MIN(ls.due_date) 
-                    FROM loan_schedule ls 
-                    WHERE ls.loan_id = l.loan_id 
-                    AND ls.status != 'paid' 
-                    AND ls.due_date < CURDATE()) as next_overdue_date
-            FROM loans l
-            LEFT JOIN customers c ON l.customer_id = c.customer_id
-            LEFT JOIN users u ON l.officer_id = u.user_id
-            LEFT JOIN loan_payments lp ON l.loan_id = lp.loan_id
-            WHERE $where
-            GROUP BY l.loan_id
-            ORDER BY l.created_at DESC
-            LIMIT 100
-        ";
-    }
-    
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $loans = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    error_log("Loans query error: " . $e->getMessage());
-    // Fallback to simplest query
+// Get loans - handle case where loan_term_type might not exist
+// First check if the column exists
+$check_column = $pdo->query("SHOW COLUMNS FROM loans LIKE 'loan_term_type'")->fetch();
+if ($check_column) {
+    // Column exists, use full query
     $sql = "
         SELECT l.*, c.customer_name, c.phone, c.email, u.username as officer_name,
-               COALESCE(SUM(lp.payment_amount), 0) as total_paid,
-               (l.loan_amount + (l.loan_amount * l.interest_rate / 100 * COALESCE(l.loan_term_months, 0))) as total_due,
+               CASE 
+                   WHEN l.loan_term_type = 'weeks' THEN CONCAT(l.loan_term_weeks, ' weeks')
+                   ELSE CONCAT(COALESCE(l.loan_term_months, 0), ' months')
+               END as term_display
+        FROM loans l
+        LEFT JOIN customers c ON l.customer_id = c.customer_id
+        LEFT JOIN users u ON l.officer_id = u.user_id
+        WHERE $where
+        ORDER BY l.created_at DESC
+        LIMIT 100
+    ";
+} else {
+    // Column doesn't exist, use fallback
+    $sql = "
+        SELECT l.*, c.customer_name, c.phone, c.email, u.username as officer_name,
                CONCAT(COALESCE(l.loan_term_months, 0), ' months') as term_display
         FROM loans l
         LEFT JOIN customers c ON l.customer_id = c.customer_id
         LEFT JOIN users u ON l.officer_id = u.user_id
-        LEFT JOIN loan_payments lp ON l.loan_id = lp.loan_id
         WHERE $where
-        GROUP BY l.loan_id
         ORDER BY l.created_at DESC
         LIMIT 100
     ";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $loans = $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-// Get loan statistics
-$stats = getLoanStatistics();
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
+$loans = $stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
 <!DOCTYPE html>
@@ -195,28 +79,28 @@ $stats = getLoanStatistics();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Loans Management - <?php echo APP_NAME; ?></title>
+    <title>My Loans - <?php echo APP_NAME; ?></title>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <link rel="stylesheet" href="../assets/css/style.css?v=<?php echo time(); ?>">
     <?php include '../includes/theme_support.php'; ?>
 </head>
 <body class="theme-<?php echo $current_theme; ?>">
-    <div class="admin-container">
+    <div class="officer-container">
         <?php 
-        $user_type = $is_admin ? 'admin' : 'officer';
+        $user_type = 'officer';
         $app_name = APP_NAME;
         $app_version = APP_VERSION;
         $base_path = '../';
+        $unread_count = $unread_count ?? 0;
         include '../includes/sidebar_template.php'; 
         ?>
         
-        <div class="admin-main">
-            
+        <div class="officer-main">
             <div class="page-header">
                 <div>
-                    <h1><i class="fas fa-file-invoice-dollar"></i> Loans Management</h1>
-                    <p>View, approve, and manage all loan applications</p>
+                    <h1><i class="fas fa-file-invoice-dollar"></i> My Loans</h1>
+                    <p>View and manage loans assigned to you</p>
                 </div>
             </div>
             
@@ -242,7 +126,7 @@ $stats = getLoanStatistics();
                 <form method="GET" class="filter-form">
                     <div class="form-group">
                         <label for="search">Search</label>
-                        <input type="text" name="search" id="search" class="form-control" placeholder="Customer name, Loan ID, or date (YYYY-MM-DD)" value="<?php echo htmlspecialchars($search); ?>">
+                        <input type="text" name="search" id="search" class="form-control" placeholder="Customer name or Loan ID" value="<?php echo htmlspecialchars($search); ?>">
                     </div>
                     <div class="form-group">
                         <label for="status">Status</label>
@@ -273,7 +157,7 @@ $stats = getLoanStatistics();
             
             <div class="card">
                 <div class="card-header">
-                    <h2 class="card-title"><i class="fas fa-file-invoice-dollar"></i> Loans List</h2>
+                    <h2 class="card-title"><i class="fas fa-file-invoice-dollar"></i> My Loans</h2>
                 </div>
                 <div class="card-body" style="padding: 0;">
                     <div class="table-responsive">
@@ -287,14 +171,13 @@ $stats = getLoanStatistics();
                             <th>Term</th>
                             <th>Application Date</th>
                             <th>Status</th>
-                            <th>Officer</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($loans)): ?>
                             <tr>
-                                <td colspan="9" style="text-align: center; padding: var(--spacing-2xl); color: var(--medium-gray);">
+                                <td colspan="8" style="text-align: center; padding: var(--spacing-2xl); color: var(--medium-gray);">
                                     <i class="fas fa-inbox" style="font-size: 3rem; margin-bottom: var(--spacing-md); opacity: 0.3;"></i>
                                     <p>No loans found</p>
                                 </td>
@@ -308,7 +191,17 @@ $stats = getLoanStatistics();
                             }
                             
                             foreach ($loans as $loan): 
-                                $is_overdue = !empty($loan['next_overdue_date']) && strtotime($loan['next_overdue_date']) < strtotime(date('Y-m-d'));
+                                // Check if loan has overdue installments
+                                $overdue_stmt = $pdo->prepare("
+                                    SELECT MIN(due_date) as next_overdue_date
+                                    FROM loan_schedule 
+                                    WHERE loan_id = ? 
+                                    AND status != 'paid' 
+                                    AND due_date < CURDATE()
+                                ");
+                                $overdue_stmt->execute([$loan['loan_id']]);
+                                $overdue_data = $overdue_stmt->fetch(PDO::FETCH_ASSOC);
+                                $is_overdue = !empty($overdue_data['next_overdue_date']);
                                 $row_style = $is_overdue ? 'background-color: #ffebee; color: #c62828;' : '';
                             ?>
                                 <tr style="<?php echo $row_style; ?>">
@@ -329,22 +222,9 @@ $stats = getLoanStatistics();
                                             <?php endif; ?>
                                         </span>
                                     </td>
-                                    <td><?php echo $loan['officer_name'] ? htmlspecialchars($loan['officer_name']) : 'Unassigned'; ?></td>
                                     <td>
                                         <div style="display: flex; gap: var(--spacing-xs);">
-                                            <?php if ($loan['status'] === 'pending'): ?>
-                                                <a href="loans.php?approve=<?php echo $loan['loan_id']; ?>" class="btn btn-success btn-sm" onclick="return confirm('Approve this loan?');">
-                                                    <i class="fas fa-check"></i> Approve
-                                                </a>
-                                                <a href="loans.php?reject=<?php echo $loan['loan_id']; ?>&reason=Not%20approved" class="btn btn-danger btn-sm" onclick="return confirm('Reject this loan?');">
-                                                    <i class="fas fa-times"></i> Reject
-                                                </a>
-                                            <?php elseif ($loan['status'] === 'approved'): ?>
-                                                <a href="loans.php?disburse=<?php echo $loan['loan_id']; ?>" class="btn btn-primary btn-sm" onclick="return confirm('Disburse and activate this loan?');">
-                                                    <i class="fas fa-money-bill-wave"></i> Disburse
-                                                </a>
-                                            <?php endif; ?>
-                                            <a href="customer_account.php?id=<?php echo $loan['customer_id']; ?>" class="btn btn-outline btn-sm">
+                                            <a href="../admin/customer_account.php?id=<?php echo $loan['customer_id']; ?>" class="btn btn-outline btn-sm">
                                                 <i class="fas fa-eye"></i> View
                                             </a>
                                         </div>
@@ -361,13 +241,25 @@ $stats = getLoanStatistics();
     </div>
     
     <script>
-        // Sidebar toggle functionality
-        
-        // Restore sidebar state on page load
+        // Ensure toggle functions are available
         document.addEventListener('DOMContentLoaded', function() {
-            const isCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
-            if (isCollapsed) {
-                document.querySelector('.admin-container').classList.add('sidebar-collapsed');
+            // Verify sidebar toggle is available
+            if (typeof toggleSidebar === 'undefined') {
+                console.error('toggleSidebar function not found');
+            }
+            
+            // Verify theme toggle is available
+            if (typeof toggleTheme === 'undefined') {
+                console.error('toggleTheme function not found');
+            }
+            
+            // Force re-initialization if needed
+            const container = document.querySelector('.officer-container');
+            if (container) {
+                const isCollapsed = localStorage.getItem('officerSidebarCollapsed') === 'true';
+                if (isCollapsed) {
+                    container.classList.add('sidebar-collapsed');
+                }
             }
         });
     </script>

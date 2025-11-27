@@ -2,22 +2,20 @@
 session_start();
 require_once '../config.php';
 require_once '../functions.php';
-requireAdminOrOfficer();
+requireOfficer();
 
-$is_admin = isAdmin();
+$is_admin = false; // Officers cannot have admin privileges
 $user_id = $_SESSION['user_id'];
 $customer_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
 if (!$customer_id) {
-    $redirect_url = $is_admin ? 'customers.php' : '../officer/customers.php';
-    header("Location: " . $redirect_url);
+    header("Location: customers.php");
     exit();
 }
 
 $customer = getCustomerById($customer_id);
 if (!$customer) {
-    $redirect_url = $is_admin ? 'customers.php' : '../officer/customers.php';
-    header("Location: " . $redirect_url);
+    header("Location: customers.php");
     exit();
 }
 
